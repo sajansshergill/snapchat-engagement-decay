@@ -1,2 +1,1 @@
-# snapchat-engagement-decay
-📸 Snapchat Friend Engagement Decay &amp; Re-Activation Signal Model
+# 📸 Snapchat Friend Engagement Decay &amp; Re-Activation Signal Model
