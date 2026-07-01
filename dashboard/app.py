@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -18,8 +17,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.causal import compute_did, propensity_score_matching
 from src.classifier import evaluate_model, prepare_reactivation_data, train_xgb
-from src.features import DASHBOARD_COLS, FEATURE_COLS, engineer_features, load_data
-from src.survival_model import assign_cohort
+from src.features import (
+    DASHBOARD_COLS,
+    FEATURE_COLS,
+    assign_engagement_cohort,
+    engineer_features,
+    load_data,
+)
 
 DARK = "#0D0D0D"
 YELLOW = "#FFFC00"
@@ -48,7 +52,7 @@ st.markdown(
 def get_data() -> pd.DataFrame:
     df = load_data(REPO_ROOT / "data" / "sample_pairs.csv")
     df = engineer_features(df)
-    return assign_cohort(df)
+    return assign_engagement_cohort(df)
 
 
 @st.cache_resource(show_spinner=True)

@@ -179,6 +179,12 @@ Built with **Streamlit**, the dashboard includes:
 streamlit run dashboard/app.py
 ```
 
+For Streamlit Community Cloud, set the app entrypoint to:
+
+```text
+dashboard/app.py
+```
+
 ---
 
 ## 🛠️ Tech Stack
