@@ -10,8 +10,10 @@
 
 # ## Setup
 
-import sys, os
-sys.path.insert(0, os.path.abspath(".."))
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 import numpy as np
@@ -71,7 +73,7 @@ cv_model = xgb.XGBClassifier(
     scale_pos_weight=(y_train == 0).sum() / (y_train == 1).sum(),
     random_state=42, eval_metric="auc", verbosity=0,
 )
-cv_scores = cross_val_score(cv_model, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+cv_scores = cross_val_score(cv_model, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=1)
 
 print(f"5-Fold CV AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
 print(f"Per-fold:      {[f'{s:.4f}' for s in cv_scores]}")
@@ -184,7 +186,6 @@ fig.update_layout(**LAYOUT, height=460,
     title=f"Global {explanation_name} — Re-Activation Model",
     xaxis=dict(title=importance_label, gridcolor="#222", color="white"),
     yaxis=dict(color="white"),
-    margin=dict(l=200, r=80, t=50, b=60),
 )
 fig.show()
 
@@ -243,7 +244,6 @@ fig.update_layout(**LAYOUT, height=480,
     title=f"{explanation_name} Waterfall — Highest Scored Pair (P(reactivate) = {probs[top_pair_idx]:.1%})",
     xaxis=dict(title=f"{explanation_name} contribution", gridcolor="#222", color="white"),
     yaxis=dict(color="white"),
-    margin=dict(l=220, r=40, t=50, b=60),
 )
 fig.show()
 

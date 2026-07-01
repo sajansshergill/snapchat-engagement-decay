@@ -11,8 +11,10 @@
 
 # ## Setup
 
-import sys, os
-sys.path.insert(0, os.path.abspath(".."))
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 import numpy as np
@@ -147,7 +149,6 @@ fig.update_layout(**LAYOUT, height=420,
     title="Cox PH — Hazard Ratios (HR > 1 = faster decay)",
     xaxis=dict(title="Hazard Ratio", gridcolor="#222", color="white"),
     yaxis=dict(color="white", gridcolor="#222"),
-    margin=dict(l=200, r=40, t=50, b=60),
 )
 fig.show()
 

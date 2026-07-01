@@ -11,8 +11,10 @@
 
 # ## Setup
 
-import sys, os
-sys.path.insert(0, os.path.abspath(".."))
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 import numpy as np
@@ -71,7 +73,6 @@ fig.update_layout(**LAYOUT, height=360,
     title="Standardised Mean Difference — Pre-Experiment Covariate Balance",
     xaxis=dict(title="Absolute SMD", gridcolor="#222", color="white"),
     yaxis=dict(color="white"),
-    margin=dict(l=200, r=80, t=50, b=60),
 )
 fig.show()
 

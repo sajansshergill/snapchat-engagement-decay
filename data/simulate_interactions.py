@@ -10,6 +10,7 @@ from faker import Faker
 import duckdb
 import os
 
+Faker.seed(42)
 fake = Faker()
 np.random.seed(42)
 

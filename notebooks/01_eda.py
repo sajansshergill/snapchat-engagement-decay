@@ -9,8 +9,10 @@
 
 # ## Setup
 
-import sys, os
-sys.path.insert(0, os.path.abspath(".."))
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 import numpy as np
