@@ -1,13 +1,12 @@
-"""Lightweight Streamlit dashboard for deployment."""
+"""Dependency-light Streamlit dashboard for Streamlit Community Cloud."""
 
 from __future__ import annotations
 
-from math import erfc, sqrt
+import csv
+from io import StringIO
+from math import erfc, exp, sqrt
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -19,8 +18,7 @@ YELLOW = "#FFFC00"
 TEAL = "#4ECDC4"
 RED = "#FF6B6B"
 
-BASE_COLUMNS = [
-    "user_pair_id",
+NUMERIC_COLUMNS = [
     "days_since_last_snap",
     "streak_length",
     "avg_response_time_hrs",
@@ -36,7 +34,7 @@ BASE_COLUMNS = [
     "reactivated",
 ]
 
-DASHBOARD_COLS = [
+DASHBOARD_COLUMNS = [
     "user_pair_id",
     "days_since_last_snap",
     "streak_length",
@@ -49,15 +47,11 @@ DASHBOARD_COLS = [
     "reactivation_score",
     "reactivated",
     "treatment",
+    "cohort",
 ]
 
 
-st.set_page_config(
-    page_title="Snapchat Engagement Decay",
-    page_icon="📸",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Snapchat Engagement Decay", page_icon="📸", layout="wide")
 st.markdown(
     """
     <style>
@@ -70,60 +64,84 @@ st.markdown(
 )
 
 
-def sigmoid(x: pd.Series | np.ndarray) -> pd.Series | np.ndarray:
-    return 1 / (1 + np.exp(-x))
+def sigmoid(value: float) -> float:
+    return 1 / (1 + exp(-value))
+
+
+def mean(rows: list[dict], column: str) -> float:
+    return sum(float(row[column]) for row in rows) / len(rows) if rows else 0.0
+
+
+def quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * q
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def cohort_for(days_since_last_snap: float) -> str:
+    if days_since_last_snap <= 3:
+        return "Active (0-3d)"
+    if days_since_last_snap <= 10:
+        return "At-Risk (4-10d)"
+    return "Cold (10d+)"
+
+
+def add_features(row: dict) -> dict:
+    row["coldness_risk"] = max(
+        0.0,
+        min(
+            10.0,
+            row["days_since_last_snap"] * 0.30
+            + row["avg_response_time_hrs"] * 0.10
+            - row["streak_length"] * 0.05
+            - row["pct_snaps_opened"] * 2.00,
+        ),
+    )
+    score_logit = (
+        -0.90
+        + 0.035 * row["streak_length"]
+        + 0.090 * row["shared_stories_viewed"]
+        + 0.110 * row["snap_map_checks"]
+        - 0.030 * row["avg_response_time_hrs"]
+        - 0.002 * row["friend_suggestion_rank"]
+        + 0.045 * row["notification_received_7d"]
+    )
+    row["reactivation_score"] = max(0.0, min(1.0, sigmoid(score_logit)))
+    row["cohort"] = cohort_for(row["days_since_last_snap"])
+    return row
 
 
 @st.cache_data(show_spinner=False)
-def load_dashboard_data() -> pd.DataFrame:
+def load_dashboard_data() -> list[dict]:
     if not DATA_PATH.exists() or DATA_PATH.stat().st_size == 0:
-        raise FileNotFoundError("data/sample_pairs.csv is missing. Regenerate and push the sample dataset.")
+        raise FileNotFoundError("data/sample_pairs.csv is missing from the repository.")
 
-    df = pd.read_csv(DATA_PATH)
-    missing = sorted(set(BASE_COLUMNS) - set(df.columns))
-    if missing:
-        raise ValueError(f"Dataset is missing required columns: {missing}")
+    with DATA_PATH.open(newline="") as file:
+        reader = csv.DictReader(file)
+        missing = sorted(set(["user_pair_id", *NUMERIC_COLUMNS]) - set(reader.fieldnames or []))
+        if missing:
+            raise ValueError(f"Dataset is missing required columns: {missing}")
 
-    numeric_cols = [col for col in BASE_COLUMNS if col != "user_pair_id"]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
-    df["snap_velocity"] = df["streak_length"] / (df["days_since_friend_added"].clip(lower=0) + 1)
-    df["response_speed_index"] = 1 / (df["avg_response_time_hrs"].clip(lower=0) + 1)
-    df["engagement_composite"] = df["pct_snaps_opened"] * df["response_speed_index"]
-    df["proximity_score"] = df["snap_map_checks"] + 0.5 * df["shared_stories_viewed"]
-    df["coldness_risk"] = (
-        df["days_since_last_snap"] * 0.30
-        + df["avg_response_time_hrs"] * 0.10
-        - df["streak_length"] * 0.05
-        - df["pct_snaps_opened"] * 2.00
-    ).clip(0, 10)
-
-    score_logit = (
-        -0.90
-        + 0.035 * df["streak_length"]
-        + 0.090 * df["shared_stories_viewed"]
-        + 0.110 * df["snap_map_checks"]
-        - 0.030 * df["avg_response_time_hrs"]
-        - 0.002 * df["friend_suggestion_rank"]
-        + 0.045 * df["notification_received_7d"]
-    )
-    df["reactivation_score"] = sigmoid(score_logit).clip(0, 1)
-    df["cohort"] = pd.cut(
-        df["days_since_last_snap"],
-        bins=[-1, 3, 10, np.inf],
-        labels=["Active (0-3d)", "At-Risk (4-10d)", "Cold (10d+)"],
-    )
-    return df
+        rows = []
+        for row in reader:
+            parsed = {"user_pair_id": row["user_pair_id"]}
+            for column in NUMERIC_COLUMNS:
+                parsed[column] = float(row[column] or 0)
+            rows.append(add_features(parsed))
+    return rows
 
 
-def compute_lift(df: pd.DataFrame) -> dict[str, float]:
-    cold = df[df["went_cold"] == 1]
-    treatment = cold[cold["treatment"] == 1]
-    control = cold[cold["treatment"] == 0]
-    treatment_rate = treatment["reactivated"].mean()
-    control_rate = control["reactivated"].mean()
+def compute_lift(rows: list[dict]) -> dict[str, float]:
+    cold = [row for row in rows if row["went_cold"] == 1]
+    treatment = [row for row in cold if row["treatment"] == 1]
+    control = [row for row in cold if row["treatment"] == 0]
+    treatment_rate = mean(treatment, "reactivated")
+    control_rate = mean(control, "reactivated")
     lift = treatment_rate - control_rate
     se = sqrt(
         treatment_rate * (1 - treatment_rate) / max(len(treatment), 1)
@@ -142,7 +160,7 @@ def compute_lift(df: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def plot_theme(fig: go.Figure, height: int = 420) -> go.Figure:
+def themed(fig: go.Figure, height: int = 420) -> go.Figure:
     fig.update_layout(
         height=height,
         paper_bgcolor=DARK,
@@ -156,8 +174,17 @@ def plot_theme(fig: go.Figure, height: int = 420) -> go.Figure:
     return fig
 
 
+def to_csv(rows: list[dict]) -> bytes:
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=DASHBOARD_COLUMNS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: row[column] for column in DASHBOARD_COLUMNS})
+    return output.getvalue().encode("utf-8")
+
+
 try:
-    df = load_dashboard_data()
+    data = load_dashboard_data()
 except Exception as exc:
     st.title("Snapchat Friend Engagement Decay")
     st.error(str(exc))
@@ -168,31 +195,32 @@ st.caption("Synthetic portfolio project for decay risk, re-activation scoring, a
 
 with st.sidebar:
     st.header("Filters")
-    cohorts = sorted(df["cohort"].dropna().astype(str).unique())
+    cohorts = ["Active (0-3d)", "At-Risk (4-10d)", "Cold (10d+)"]
     selected_cohorts = st.multiselect("Engagement cohort", cohorts, default=cohorts)
+    streak_values = [row["streak_length"] for row in data]
     min_streak, max_streak = st.slider(
         "Streak length",
-        min_value=int(df["streak_length"].min()),
-        max_value=int(df["streak_length"].max()),
-        value=(int(df["streak_length"].min()), int(df["streak_length"].quantile(0.95))),
+        min_value=int(min(streak_values)),
+        max_value=int(max(streak_values)),
+        value=(int(min(streak_values)), int(quantile(streak_values, 0.95))),
     )
     show_rows = st.slider("Rows in table", 10, 200, 50, step=10)
 
-filtered = df[
-    df["cohort"].astype(str).isin(selected_cohorts)
-    & df["streak_length"].between(min_streak, max_streak)
-].copy()
-
-if filtered.empty:
+filtered = [
+    row
+    for row in data
+    if row["cohort"] in selected_cohorts and min_streak <= row["streak_length"] <= max_streak
+]
+if not filtered:
     st.warning("No rows match the selected filters.")
     st.stop()
 
-cold_filtered = filtered[filtered["went_cold"] == 1]
+cold_filtered = [row for row in filtered if row["went_cold"] == 1]
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 kpi1.metric("Friend Pairs", f"{len(filtered):,}")
-kpi2.metric("Cold Rate", f"{filtered['went_cold'].mean():.1%}")
+kpi2.metric("Cold Rate", f"{mean(filtered, 'went_cold'):.1%}")
 kpi3.metric("Cold Pairs", f"{len(cold_filtered):,}")
-kpi4.metric("Re-Activation Rate", f"{cold_filtered['reactivated'].mean():.1%}" if len(cold_filtered) else "0.0%")
+kpi4.metric("Re-Activation Rate", f"{mean(cold_filtered, 'reactivated'):.1%}")
 
 tab_overview, tab_model, tab_causal, tab_data = st.tabs(
     ["Decay Overview", "Re-Activation Scores", "Experiment Lift", "Pair Explorer"]
@@ -200,114 +228,109 @@ tab_overview, tab_model, tab_causal, tab_data = st.tabs(
 
 with tab_overview:
     left, right = st.columns(2)
-    cohort_rates = (
-        filtered.groupby("cohort", observed=True)
-        .agg(n_pairs=("went_cold", "count"), cold_rate=("went_cold", "mean"))
-        .reset_index()
-    )
-    fig = px.bar(
-        cohort_rates,
-        x="cohort",
-        y="cold_rate",
-        color="cohort",
-        color_discrete_sequence=[TEAL, YELLOW, RED],
-        text=cohort_rates["cold_rate"].map(lambda value: f"{value:.1%}"),
-        title="Cold Rate by Engagement Cohort",
-    )
-    fig.update_yaxes(tickformat=".0%")
-    left.plotly_chart(plot_theme(fig), width="stretch")
+    cohort_counts = []
+    cohort_rates = []
+    for cohort in cohorts:
+        cohort_rows = [row for row in filtered if row["cohort"] == cohort]
+        cohort_counts.append(len(cohort_rows))
+        cohort_rates.append(mean(cohort_rows, "went_cold"))
 
-    scatter_df = filtered.sample(min(len(filtered), 5000), random_state=42)
-    fig = px.scatter(
-        scatter_df,
-        x="avg_response_time_hrs",
-        y="pct_snaps_opened",
-        color="went_cold",
-        size="streak_length",
-        color_continuous_scale=[TEAL, RED],
-        title="Response Lag vs Open Rate",
-        labels={"went_cold": "Went Cold"},
-    )
-    right.plotly_chart(plot_theme(fig), width="stretch")
+    fig = go.Figure(go.Bar(
+        x=cohorts,
+        y=cohort_rates,
+        marker_color=[TEAL, YELLOW, RED],
+        text=[f"{value:.1%}" for value in cohort_rates],
+        textposition="outside",
+    ))
+    fig.update_layout(title="Cold Rate by Engagement Cohort")
+    fig.update_yaxes(title="Cold Rate", tickformat=".0%")
+    left.plotly_chart(themed(fig), width="stretch")
 
-    fig = px.histogram(
-        filtered,
-        x="coldness_risk",
-        color="went_cold",
-        nbins=40,
-        barmode="overlay",
-        color_discrete_sequence=[TEAL, RED],
-        title="Coldness Risk Distribution",
-    )
-    st.plotly_chart(plot_theme(fig, height=360), width="stretch")
+    sample = filtered[:5000]
+    fig = go.Figure(go.Scatter(
+        x=[row["avg_response_time_hrs"] for row in sample],
+        y=[row["pct_snaps_opened"] for row in sample],
+        mode="markers",
+        marker=dict(
+            size=[max(4, min(18, row["streak_length"] / 12)) for row in sample],
+            color=[row["went_cold"] for row in sample],
+            colorscale=[[0, TEAL], [1, RED]],
+            opacity=0.55,
+        ),
+    ))
+    fig.update_layout(title="Response Lag vs Open Rate")
+    fig.update_xaxes(title="Avg Response Time (hrs)")
+    fig.update_yaxes(title="Pct Snaps Opened", tickformat=".0%")
+    right.plotly_chart(themed(fig), width="stretch")
+
+    fig = go.Figure()
+    for label, color, value in [("Active", TEAL, 0), ("Cold", RED, 1)]:
+        rows = [row for row in filtered if row["went_cold"] == value]
+        fig.add_trace(go.Histogram(
+            x=[row["coldness_risk"] for row in rows],
+            name=label,
+            marker_color=color,
+            opacity=0.75,
+            nbinsx=40,
+        ))
+    fig.update_layout(title="Coldness Risk Distribution", barmode="overlay")
+    fig.update_xaxes(title="Coldness Risk")
+    st.plotly_chart(themed(fig, height=360), width="stretch")
 
 with tab_model:
     st.subheader("Cold Pair Re-Activation Scores")
-    scored_filtered = cold_filtered.sort_values("reactivation_score", ascending=False)
-    top_decile_cutoff = scored_filtered["reactivation_score"].quantile(0.90) if len(scored_filtered) else 0
-    top_decile = scored_filtered[scored_filtered["reactivation_score"] >= top_decile_cutoff]
+    scored = sorted(cold_filtered, key=lambda row: row["reactivation_score"], reverse=True)
+    cutoff = quantile([row["reactivation_score"] for row in scored], 0.90)
+    top_decile = [row for row in scored if row["reactivation_score"] >= cutoff]
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Avg Score", f"{scored_filtered['reactivation_score'].mean():.1%}" if len(scored_filtered) else "0.0%")
-    m2.metric("Top-Decile Actual Rate", f"{top_decile['reactivated'].mean():.1%}" if len(top_decile) else "0.0%")
-    m3.metric("Scored Cold Pairs", f"{len(scored_filtered):,}")
+    m1.metric("Avg Score", f"{mean(scored, 'reactivation_score'):.1%}")
+    m2.metric("Top-Decile Actual Rate", f"{mean(top_decile, 'reactivated'):.1%}")
+    m3.metric("Scored Cold Pairs", f"{len(scored):,}")
 
-    fig = px.histogram(
-        scored_filtered,
-        x="reactivation_score",
-        nbins=40,
-        color="reactivated",
-        color_discrete_sequence=[RED, YELLOW],
-        title="Predicted Re-Activation Score Distribution",
-    )
-    fig.update_xaxes(tickformat=".0%")
-    st.plotly_chart(plot_theme(fig, height=360), width="stretch")
+    fig = go.Figure()
+    for label, color, value in [("Stayed Cold", RED, 0), ("Re-Activated", YELLOW, 1)]:
+        rows = [row for row in scored if row["reactivated"] == value]
+        fig.add_trace(go.Histogram(
+            x=[row["reactivation_score"] for row in rows],
+            name=label,
+            marker_color=color,
+            opacity=0.75,
+            nbinsx=40,
+        ))
+    fig.update_layout(title="Predicted Re-Activation Score Distribution", barmode="overlay")
+    fig.update_xaxes(title="Re-Activation Score", tickformat=".0%")
+    st.plotly_chart(themed(fig, height=360), width="stretch")
 
-    display_cols = [
-        "user_pair_id",
-        "reactivation_score",
-        "streak_length",
-        "avg_response_time_hrs",
-        "pct_snaps_opened",
-        "shared_stories_viewed",
-        "snap_map_checks",
-        "days_since_friend_added",
-        "reactivated",
-    ]
-    st.dataframe(
-        scored_filtered[display_cols].head(show_rows).style.format(
-            {"reactivation_score": "{:.1%}", "pct_snaps_opened": "{:.1%}"}
-        ),
-        width="stretch",
-    )
+    st.dataframe([{column: row[column] for column in DASHBOARD_COLUMNS} for row in scored[:show_rows]], width="stretch")
 
 with tab_causal:
     st.subheader("Memory Resurfacing Experiment")
-    lift = compute_lift(df)
+    lift = compute_lift(data)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Treatment Lift", f"{lift['lift']:+.1%}")
     c2.metric("95% CI", f"{lift['ci_lower']:+.1%} to {lift['ci_upper']:+.1%}")
     c3.metric("p-value", f"{lift['p_value']:.4f}")
     c4.metric("Experiment N", f"{lift['n_treatment'] + lift['n_control']:,}")
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
+    fig = go.Figure(go.Bar(
         x=["Control", "Memory Nudge"],
         y=[lift["control_rate"], lift["treatment_rate"]],
         marker_color=[TEAL, YELLOW],
         text=[f"{lift['control_rate']:.1%}", f"{lift['treatment_rate']:.1%}"],
         textposition="outside",
     ))
-    fig.update_yaxes(title="Re-Activation Rate", tickformat=".0%")
     fig.update_layout(title="Observed Re-Activation Rate by Experiment Arm")
-    st.plotly_chart(plot_theme(fig), width="stretch")
+    fig.update_yaxes(title="Re-Activation Rate", tickformat=".0%")
+    st.plotly_chart(themed(fig), width="stretch")
 
 with tab_data:
     st.subheader("Pair-Level Data")
-    st.dataframe(filtered[DASHBOARD_COLS + ["cohort"]].head(show_rows), width="stretch")
+    table_rows = [{column: row[column] for column in DASHBOARD_COLUMNS} for row in filtered[:show_rows]]
+    st.dataframe(table_rows, width="stretch")
     st.download_button(
         "Download filtered CSV",
-        filtered.to_csv(index=False).encode("utf-8"),
+        to_csv(filtered),
         file_name="filtered_friend_pairs.csv",
         mime="text/csv",
     )
